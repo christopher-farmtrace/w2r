@@ -1,8 +1,328 @@
-<html>
-<!-- Insert the code below the point you want to embed the form to -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SA ID Barcode Autofill</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+    label { display:block; font-size: 12px; opacity:.8; margin: 10px 0 4px; }
+    input, select, textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 10px; font-size: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: white; font-size: 16px; }
+    button.secondary { background: white; color: #111; }
+    .hint { font-size: 13px; opacity: .8; line-height: 1.4; }
+    .ok { color: #0a7; font-weight: 600; }
+    .bad { color: #c22; font-weight: 600; }
+    /* Hidden scan capture field */
+    #scanCapture {
+      position: fixed;
+      left: -9999px;
+      top: -9999px;
+      opacity: 0;
+      height: 1px;
+      width: 1px;
+    }
+    pre { white-space: pre-wrap; word-break: break-word; background: #fafafa; border: 1px solid #eee; border-radius: 10px; padding: 10px; }
+  </style>
+</head>
 <body>
-<script
-  src="https://appnostic.dbflex.net/secure/embed.js"
-  data-url="/wr-1662081/db/65095/webtorecord.aspx?t=1662081"></script>
+
+  <div class="card">
+    <h2 style="margin:0 0 8px;">Barcode → Form Autofill</h2>
+    <div class="hint">
+      Tap <b>Start scanning</b>, then scan the SA ID barcode. Most phone barcode scanners act like a keyboard and “type”
+      the decoded text quickly, ending with Enter/Tab. This page captures it and fills the fields.
+    </div>
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+      <button id="startBtn" type="button">Start scanning</button>
+      <button id="clearBtn" class="secondary" type="button">Clear</button>
+    </div>
+    <div style="margin-top:10px;" id="status"></div>
+
+    <!-- Hidden field that receives the "keyboard wedge" barcode input -->
+    <textarea id="scanCapture" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 8px;">Staff Details</h3>
+
+    <label>Surname</label>
+    <input id="surname" />
+
+    <label>Names</label>
+    <input id="names" />
+
+    <div class="row">
+      <div>
+        <label>Gender</label>
+        <select id="gender">
+          <option value=""></option>
+          <option value="M">M</option>
+          <option value="F">F</option>
+        </select>
+      </div>
+      <div>
+        <label>ID Number</label>
+        <input id="idNumber" inputmode="numeric" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Date of Birth</label>
+        <input id="dob" placeholder="YYYY-MM-DD" />
+      </div>
+      <div>
+        <label>Citizenship</label>
+        <input id="citizenship" placeholder="CITIZEN / PERMANENT RESIDENT / ..." />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Country (as scanned)</label>
+        <input id="country" placeholder="SA / RSA / ..." />
+      </div>
+      <div>
+        <label>Issue Date</label>
+        <input id="issueDate" placeholder="YYYY-MM-DD" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 8px;">Debug</h3>
+    <div class="hint">This shows what was received and how it was split. Useful when you test different scanner apps.</div>
+    <label>Raw scan</label>
+    <pre id="rawOut"></pre>
+    <label>Fields detected</label>
+    <pre id="fieldsOut"></pre>
+  </div>
+
+<script>
+(function () {
+  const scanCapture = document.getElementById('scanCapture');
+  const startBtn = document.getElementById('startBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const status = document.getElementById('status');
+
+  const rawOut = document.getElementById('rawOut');
+  const fieldsOut = document.getElementById('fieldsOut');
+
+  const $ = (id) => document.getElementById(id);
+
+  // Heuristic: scans often end with Enter (keyCode 13), Tab (9), or include a final newline.
+  // We'll also detect "no new characters for X ms" and then parse.
+  let buffer = "";
+  let lastKeyTime = 0;
+  let flushTimer = null;
+
+  function setStatus(msg, ok=true) {
+    status.innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${msg}</span>`;
+  }
+
+  function clearAll() {
+    buffer = "";
+    scanCapture.value = "";
+    rawOut.textContent = "";
+    fieldsOut.textContent = "";
+    ["surname","names","gender","idNumber","dob","citizenship","country","issueDate"].forEach(id => $(id).value = "");
+    setStatus("Cleared.", true);
+  }
+
+  function normalizeWhitespace(s) {
+    // Some scanners insert CRLFs, tabs, multiple spaces.
+    return s.replace(/\r/g, "\n").replace(/\t/g, "\n").replace(/[ ]{2,}/g, " ").trim();
+  }
+
+  function splitFields(s) {
+    // Prefer splitting by newlines; if none, try pipes.
+    const hasNewlines = /\n/.test(s);
+    let parts = [];
+
+    if (hasNewlines) {
+      parts = s.split("\n").map(p => p.trim()).filter(Boolean);
+    } else if (s.includes("|")) {
+      parts = s.split("|").map(p => p.trim()).filter(Boolean);
+    } else {
+      // fallback: if scanner gave one long string, try to split on common patterns
+      // (this is best-effort; debug output will help you tune)
+      parts = s.split(/\s*\|\s*|\s{2,}/).map(p => p.trim()).filter(Boolean);
+    }
+
+    return parts;
+  }
+
+  function parseSaIdFields(parts) {
+    // Many SA ID barcode decodes appear as:
+    // [0] Surname
+    // [1] Names
+    // [2] M/F
+    // [3] SA/RSA
+    // [4] 13-digit ID
+    // [5] DD MON YYYY (DOB)
+    // [6] SA/RSA (Country of birth)
+    // [7] CITIZEN / PERMANENT RESIDENT
+    // [8] DD MON YYYY (Issue date)
+    // [9+] codes...
+    //
+    // We'll also anchor on the 13-digit ID if present, in case positions shift.
+
+    const joined = parts.join(" | ");
+    const idMatchIndex = parts.findIndex(p => /^\d{13}$/.test(p.replace(/\s/g,'')));
+    const idNumber = idMatchIndex >= 0 ? parts[idMatchIndex].replace(/\s/g,'') : "";
+
+    let surname = "";
+    let names = "";
+    let gender = "";
+    let country = "";
+    let dobRaw = "";
+    let citizenship = "";
+    let issueRaw = "";
+
+    function looksLikeGender(v) { return /^M$|^F$/i.test(v.trim()); }
+    function looksLikeDateWords(v) { return /^\d{2}\s+[A-Z]{3}\s+\d{4}$/i.test(v.trim()); }
+    function parseDateWords(v) {
+      // "01 JAN 1980" -> "1980-01-01"
+      const m = v.trim().toUpperCase().match(/^(\d{2})\s+([A-Z]{3})\s+(\d{4})$/);
+      if (!m) return "";
+      const dd = m[1], mon = m[2], yyyy = m[3];
+      const map = {JAN:"01",FEB:"02",MAR:"03",APR:"04",MAY:"05",JUN:"06",JUL:"07",AUG:"08",SEP:"09",OCT:"10",NOV:"11",DEC:"12"};
+      const mm = map[mon] || "";
+      if (!mm) return "";
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    if (parts.length >= 5) {
+      // Default positional mapping (most common)
+      surname = parts[0] || "";
+      names = parts[1] || "";
+
+      if (looksLikeGender(parts[2] || "")) gender = (parts[2] || "").toUpperCase();
+
+      // Country appears near index 3 (or 6)
+      country = parts[3] || "";
+
+      // DOB often appears right after ID number, but in positional layout it's at index 5
+      dobRaw = parts[5] || "";
+      citizenship = parts[7] || "";
+      issueRaw = parts[8] || "";
+    }
+
+    // If ID wasn't where expected, re-anchor around it:
+    if (idMatchIndex >= 0) {
+      // typical: ... country, ID, DOB, country, citizenship, issue
+      if (!dobRaw && parts[idMatchIndex + 1]) dobRaw = parts[idMatchIndex + 1];
+      if (!citizenship && parts[idMatchIndex + 3]) citizenship = parts[idMatchIndex + 3];
+      if (!issueRaw && parts[idMatchIndex + 4]) issueRaw = parts[idMatchIndex + 4];
+
+      // If surname/names/gender missing, try to fill from beginning
+      if (!surname && parts[0]) surname = parts[0];
+      if (!names && parts[1]) names = parts[1];
+      if (!gender) {
+        const g = parts.find(looksLikeGender);
+        if (g) gender = g.toUpperCase();
+      }
+      // country: prefer the token right before ID, else first SA/RSA-like token
+      if ((!country || country.length > 10) && parts[idMatchIndex - 1]) country = parts[idMatchIndex - 1];
+      if (!country) {
+        const c = parts.find(p => /^SA$|^RSA$/i.test(p.trim()));
+        if (c) country = c.toUpperCase();
+      }
+    }
+
+    const dob = looksLikeDateWords(dobRaw) ? parseDateWords(dobRaw) : "";
+    const issueDate = looksLikeDateWords(issueRaw) ? parseDateWords(issueRaw) : "";
+
+    return { surname, names, gender, country, idNumber, dob, citizenship, issueDate, joined };
+  }
+
+  function fillForm(data) {
+    if (data.surname) $("surname").value = data.surname;
+    if (data.names) $("names").value = data.names;
+    if (data.gender) $("gender").value = data.gender;
+    if (data.country) $("country").value = data.country;
+    if (data.idNumber) $("idNumber").value = data.idNumber;
+    if (data.dob) $("dob").value = data.dob;
+    if (data.citizenship) $("citizenship").value = data.citizenship;
+    if (data.issueDate) $("issueDate").value = data.issueDate;
+  }
+
+  function parseAndApply(raw) {
+    const normalized = normalizeWhitespace(raw);
+    rawOut.textContent = normalized || "(empty)";
+
+    const parts = splitFields(normalized);
+    fieldsOut.textContent = parts.map((p, i) => `[${i}] ${p}`).join("\n") || "(no fields detected)";
+
+    const data = parseSaIdFields(parts);
+    fillForm(data);
+
+    if (data.idNumber) {
+      setStatus("Scan captured and form autofilled ✅", true);
+    } else {
+      setStatus("Scan captured, but no 13-digit ID detected. Check the Debug output.", false);
+    }
+  }
+
+  function scheduleFlush() {
+    // Many scanners "type" very fast. If we see no keypress for 120ms, treat scan as complete.
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      if (buffer.trim().length > 0) {
+        parseAndApply(buffer);
+        buffer = "";
+        scanCapture.value = "";
+      }
+    }, 120);
+  }
+
+  // Capture keystrokes into buffer
+  scanCapture.addEventListener("keydown", (e) => {
+    lastKeyTime = Date.now();
+
+    // End-of-scan keys
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      const v = scanCapture.value; // may include the typed text already
+      // Prefer buffer (more reliable), but also include textarea value.
+      const raw = (buffer + (v ? "\n" + v : "")).trim();
+      if (raw) parseAndApply(raw);
+      buffer = "";
+      scanCapture.value = "";
+      return;
+    }
+
+    // For most keys, we let input event handle it
+    scheduleFlush();
+  });
+
+  // Some browsers/scanners may not trigger keydown as expected; input is another path
+  scanCapture.addEventListener("input", () => {
+    const v = scanCapture.value;
+    // Keep a separate buffer so we can detect completion reliably.
+    buffer = v;
+    scheduleFlush();
+  });
+
+  // Button actions
+  startBtn.addEventListener("click", () => {
+    scanCapture.focus({ preventScroll: true });
+    // On iOS Safari, programmatic focus sometimes needs a user gesture (this click is that gesture).
+    setStatus("Ready. Now scan the barcode…", true);
+  });
+
+  clearBtn.addEventListener("click", clearAll);
+
+  // Auto-focus on load (may be blocked on mobile until user taps)
+  window.addEventListener("load", () => {
+    setStatus("Tap “Start scanning” to focus the scan field.", true);
+  });
+
+})();
+</script>
+
 </body>
 </html>
