@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SA ID Barcode Autofill (2-step + enums)</title>
+  <title>SA ID Barcode Autofill (2-step + enums + flat payload)</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
@@ -87,8 +87,8 @@
 
     <div class="row">
       <div>
-        <label>Country (as scanned)</label>
-        <input id="countryScanned" placeholder="SA / RSA / ..." />
+        <label>Nationality (scanned)</label>
+        <input id="nationality" placeholder="SA / RSA / ..." />
       </div>
       <div>
         <label>Issue Date</label>
@@ -251,7 +251,7 @@
     payloadOut.textContent = "(submit to view payload)";
 
     const ids = [
-      "surname","names","gender","idNumber","dob","citizenship","countryScanned","issueDate",
+      "surname","names","gender","idNumber","dob","citizenship","nationality","issueDate",
       "race","language","maritalStatus",
       "addrCountry","streetNumber","streetName","suburb","cityTown","province","postalCode"
     ];
@@ -270,12 +270,8 @@
   }
 
   function splitFields(s) {
-    if (/\n/.test(s)) {
-      return s.split("\n").map(p => p.trim()).filter(Boolean);
-    }
-    if (s.includes("|")) {
-      return s.split("|").map(p => p.trim()).filter(Boolean);
-    }
+    if (/\n/.test(s)) return s.split("\n").map(p => p.trim()).filter(Boolean);
+    if (s.includes("|")) return s.split("|").map(p => p.trim()).filter(Boolean);
     return s.split(/\s*\|\s*|\s{2,}/).map(p => p.trim()).filter(Boolean);
   }
 
@@ -287,7 +283,7 @@
     let surname = parts[0] || "";
     let names = parts[1] || "";
     let gender = "";
-    let country = parts[3] || "";
+    let nationality = parts[3] || "";   // was countryScanned, now nationality
     let dobRaw = parts[5] || "";
     let citizenship = parts[7] || "";
     let issueRaw = parts[8] || "";
@@ -307,7 +303,7 @@
 
     // Re-anchor around the ID number if present (handles slightly different layouts)
     if (idMatchIndex >= 0) {
-      if ((!country || country.length > 10) && parts[idMatchIndex - 1]) country = parts[idMatchIndex - 1];
+      if ((!nationality || nationality.length > 10) && parts[idMatchIndex - 1]) nationality = parts[idMatchIndex - 1];
       if (!dobRaw && parts[idMatchIndex + 1]) dobRaw = parts[idMatchIndex + 1];
       if (!citizenship && parts[idMatchIndex + 3]) citizenship = parts[idMatchIndex + 3];
       if (!issueRaw && parts[idMatchIndex + 4]) issueRaw = parts[idMatchIndex + 4];
@@ -321,14 +317,14 @@
     const dob = looksLikeDateWords(dobRaw) ? parseDateWords(dobRaw) : "";
     const issueDate = looksLikeDateWords(issueRaw) ? parseDateWords(issueRaw) : "";
 
-    return { surname, names, gender, country, idNumber, dob, citizenship, issueDate };
+    return { surname, names, gender, nationality, idNumber, dob, citizenship, issueDate };
   }
 
   function fillStep1(data) {
     if (data.surname) $("surname").value = data.surname;
     if (data.names) $("names").value = data.names;
     if (data.gender) $("gender").value = data.gender;
-    if (data.country) $("countryScanned").value = data.country;
+    if (data.nationality) $("nationality").value = data.nationality;
     if (data.idNumber) $("idNumber").value = data.idNumber;
     if (data.dob) $("dob").value = data.dob;
     if (data.citizenship) $("citizenship").value = data.citizenship;
@@ -390,32 +386,29 @@
   nextStepBtn.addEventListener("click", () => setStep(2));
   backBtn.addEventListener("click", () => setStep(1));
 
+  // Submit: output FLAT payload to Debug panel
   submitBtn.addEventListener("click", () => {
     const payload = {
-      staff: {
-        surname: $("surname").value.trim() || null,
-        names: $("names").value.trim() || null,
-        gender: $("gender").value || null,
-        idNumber: $("idNumber").value.trim() || null,
-        dob: $("dob").value.trim() || null,
-        citizenship: $("citizenship").value.trim() || null,
-        countryScanned: $("countryScanned").value.trim() || null,
-        issueDate: $("issueDate").value.trim() || null,
+      surname: $("surname").value.trim() || null,
+      names: $("names").value.trim() || null,
+      gender: $("gender").value || null,
+      idNumber: $("idNumber").value.trim() || null,
+      dob: $("dob").value.trim() || null,
+      citizenship: $("citizenship").value.trim() || null,
+      nationality: $("nationality").value.trim() || null, // renamed from countryScanned
+      issueDate: $("issueDate").value.trim() || null,
 
-        race: $("race").value || null,
-        language: $("language").value || null,
-        maritalStatus: $("maritalStatus").value || null,
+      race: $("race").value || null,
+      language: $("language").value || null,
+      maritalStatus: $("maritalStatus").value || null,
 
-        address: {
-          country: $("addrCountry").value.trim() || null,
-          streetNumber: $("streetNumber").value.trim() || null,
-          streetName: $("streetName").value.trim() || null,
-          suburb: $("suburb").value.trim() || null,
-          cityTown: $("cityTown").value.trim() || null,
-          province: $("province").value.trim() || null,
-          postalCode: $("postalCode").value.trim() || null
-        }
-      }
+      country: $("addrCountry").value.trim() || null,
+      streetNumber: $("streetNumber").value.trim() || null,
+      streetName: $("streetName").value.trim() || null,
+      suburb: $("suburb").value.trim() || null,
+      cityTown: $("cityTown").value.trim() || null,
+      province: $("province").value.trim() || null,
+      postalCode: $("postalCode").value.trim() || null
     };
 
     payloadOut.textContent = JSON.stringify(payload, null, 2);
