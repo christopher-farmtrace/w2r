@@ -157,7 +157,7 @@
   <h2 style="margin:0 0 8px;">Barcode → Form Autofill</h2>
   <div class="hint">
     Tap <b>Scan with Camera</b> to use your phone's camera on the PDF417 barcode on the
-    <b>back</b> of the SA ID. Or use a Bluetooth / USB barcode scanner with <b>Keyboard scanner</b>.
+    <b>back</b> of the SA ID. Or use a Bluetooth / USB barcode scanner with <b>Scanner</b>.
   </div>
 
   <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -168,7 +168,7 @@
       </svg>
       Scan with Camera
     </button>
-    <button id="startBtn" class="secondary" type="button">⌨ Keyboard scanner</button>
+    <button id="startBtn" class="secondary" type="button">Scanner</button>
     <button id="clearBtn" class="secondary" type="button">Clear</button>
   </div>
 
@@ -311,8 +311,9 @@
   </div>
 
   <div class="hint muted" style="margin-top:8px;">
-    Submit will output the JSON payload into the Debug panel (no network request yet).
+    Submit will post the payload to DBFlex if <code>#authToken=…&amp;dbId=…</code> are present in the URL, otherwise output JSON to the Debug panel.
   </div>
+  <div id="apiStatus" style="margin-top:8px; font-size:13px; min-height:18px;"></div>
 </div>
 
 <!-- SETTINGS -->
@@ -787,7 +788,7 @@ function loadZXing() {
   $('clearBtn').addEventListener('click', clearAll);
   $('nextStepBtn').addEventListener('click', () => setStep(2));
   $('backBtn').addEventListener('click', () => setStep(1));
-  $('submitBtn').addEventListener('click', () => {
+  $('submitBtn').addEventListener('click', async () => {
     const p = {
       surname:$('surname').value.trim()||null, names:$('names').value.trim()||null,
       gender:$('gender').value||null, idNumber:$('idNumber').value.trim()||null,
@@ -802,6 +803,44 @@ function loadZXing() {
     };
     payloadOut.textContent = JSON.stringify(p, null, 2);
     setStatus('Submitted — payload in Debug panel', true);
+
+    // ── DBFlex API POST (if hash params present) ─────────────────
+    const hashParams = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    const authToken  = hashParams.get('authToken');
+    const dbId       = hashParams.get('dbId');
+    const apiStatusEl = $('apiStatus');
+
+    if (authToken && dbId) {
+      const endpoint = `https://appnostic.dbflex.net/secure/api/v2/${encodeURIComponent(dbId)}/Staffify/create.json`;
+      apiStatusEl.innerHTML = '<span class="warn">Sending to DBFlex…</span>';
+      $('submitBtn').disabled = true;
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify(p)
+        });
+        const text = await res.text();
+        let pretty = text;
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(_) {}
+        payloadOut.textContent = JSON.stringify(p, null, 2) + '\n\n── DBFlex Response ──\n' + pretty;
+        if (res.ok) {
+          apiStatusEl.innerHTML = `<span class="ok">✓ Sent to DBFlex (HTTP ${res.status})</span>`;
+        } else {
+          apiStatusEl.innerHTML = `<span class="bad">✗ DBFlex error: HTTP ${res.status} ${res.statusText}</span>`;
+        }
+      } catch (err) {
+        apiStatusEl.innerHTML = `<span class="bad">✗ Fetch error (CORS?): ${err && err.message ? err.message : String(err)}</span>`;
+      } finally {
+        $('submitBtn').disabled = false;
+      }
+    } else {
+      apiStatusEl.innerHTML = '<span class="muted">No DBFlex credentials in URL hash — payload shown in Debug only. Add <code>#authToken=…&amp;dbId=…</code> to the URL to enable posting.</span>';
+    }
+
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   });
 
@@ -888,7 +927,7 @@ function loadZXing() {
         '⚠ Camera unavailable on file:// URLs. ' +
         'Run a local server (e.g. <code>npx serve .</code> or <code>python -m http.server</code>) ' +
         'and open <b>http://localhost:&lt;port&gt;</b> to enable camera scanning. ' +
-        'The keyboard scanner still works here.',
+        'The Scanner still works here.',
         false
       );
     } else if (!navigator.mediaDevices?.getUserMedia) {
