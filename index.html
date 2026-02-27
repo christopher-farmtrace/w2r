@@ -36,12 +36,21 @@
     #cameraBtn svg { flex-shrink: 0; }
     #cameraBtn:disabled { background: #666; border-color: #555; }
 
+    /* ── Scanbot test button ── */
+    #scanbotBtn {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: #b8000a; border-color: #8c0008; color: #fff;
+    }
+    #scanbotBtn svg { flex-shrink: 0; }
+    #scanbotBtn:disabled { background: #666; border-color: #555; }
+
     /* ── Fullscreen scanner overlay ── */
     #scanOverlay {
       position: fixed; inset: 0; z-index: 1000;
       background: #000;
       display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
+      align-items: center; justify-content: flex-end;
+      padding-bottom: 48px;
     }
     #scanOverlay.hidden { display: none !important; }
 
@@ -51,48 +60,11 @@
       object-fit: cover;
     }
 
-    /* Viewfinder — PDF417 is wide so use 3:1 ratio */
-    .scan-frame {
-      position: relative; z-index: 2;
-      width: min(88vw, 520px);
-      aspect-ratio: 3 / 1;
-      border-radius: 10px;
-      box-shadow: 0 0 0 9999px rgba(0,0,0,0.55);
-      border: 2.5px solid rgba(255,255,255,0.8);
-      overflow: hidden;
-    }
-
-    .scan-line {
-      position: absolute; left: 0; right: 0; height: 2px;
-      background: linear-gradient(90deg, transparent 0%, #38f 30%, #8cf 50%, #38f 70%, transparent 100%);
-      animation: scanMove 1.8s ease-in-out infinite;
-    }
-    @keyframes scanMove {
-      0%   { top: 2%;  opacity:1; }
-      45%  { top: 92%; opacity:1; }
-      50%  { top: 92%; opacity:0; }
-      55%  { top: 2%;  opacity:0; }
-      60%  { top: 2%;  opacity:1; }
-      100% { top: 2%;  opacity:1; }
-    }
-
-    /* Corner accents */
-    .scan-frame::before, .scan-frame::after,
-    .scan-corner-br, .scan-corner-bl {
-      content: ''; position: absolute;
-      width: 18px; height: 18px;
-      border-color: #4af; border-style: solid;
-    }
-    .scan-frame::before { top:-1px; left:-1px;   border-width:3px 0 0 3px; border-radius:6px 0 0 0; }
-    .scan-frame::after  { top:-1px; right:-1px;  border-width:3px 3px 0 0; border-radius:0 6px 0 0; }
-    .scan-corner-br     { bottom:-1px; right:-1px; border-width:0 3px 3px 0; border-radius:0 0 6px 0; }
-    .scan-corner-bl     { bottom:-1px; left:-1px;  border-width:0 0 3px 3px; border-radius:0 0 0 6px; }
-
     .scan-label {
       position: relative; z-index: 2;
       color: rgba(255,255,255,0.9);
       font-size: 13px; text-align: center;
-      margin-top: 18px; padding: 0 24px;
+      padding: 0 24px;
       text-shadow: 0 1px 4px rgba(0,0,0,0.8);
     }
 
@@ -124,7 +96,7 @@
       100% { background: rgba(0,220,100,0.0); }
     }
     .flash-layer {
-      position: absolute; inset: 0; z-index: 3; pointer-events: none;
+      position: fixed; inset: 0; z-index: 1001; pointer-events: none;
       animation: successFlash 0.65s ease-out forwards;
     }
   </style>
@@ -134,12 +106,7 @@
 <!-- ═══════════════════ CAMERA OVERLAY ═══════════════════ -->
 <div id="scanOverlay" class="hidden" role="dialog" aria-modal="true" aria-label="Barcode Scanner">
   <video id="cameraFeed" playsinline muted autoplay></video>
-  <div class="scan-frame" id="scanFrame">
-    <div class="scan-line"></div>
-    <div class="scan-corner-br"></div>
-    <div class="scan-corner-bl"></div>
-  </div>
-  <div class="scan-label">Hold the PDF417 barcode (back of SA ID) inside the frame</div>
+  <div class="scan-label">Point camera at the PDF417 barcode (back of SA ID)</div>
   <div id="scanMsg">Initialising…</div>
   <div class="scan-actions">
     <button id="torchBtn" type="button">🔦 Torch</button>
@@ -167,6 +134,12 @@
         <circle cx="12" cy="13" r="4"/>
       </svg>
       Scan with Camera
+    </button>
+    <button id="scanbotBtn" type="button">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+      </svg>
+      Scanbot (Test)
     </button>
     <button id="startBtn" class="secondary" type="button">Scanner</button>
     <button id="clearBtn" class="secondary" type="button">Clear</button>
@@ -375,13 +348,43 @@
     if (_zxingBrowserPromise) return _zxingBrowserPromise;
     _zxingBrowserPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      // @zxing/browser 0.1.4 – stable, works on iOS 14.5+ & Android Chrome
-      s.src = 'https://unpkg.com/@zxing/browser@0.1.4/umd/index.min.js';
+      // @zxing/browser 0.1.5 – correct UMD bundle path on unpkg
+      s.src = 'https://unpkg.com/@zxing/browser@0.1.5/umd/zxing-browser.min.js';
       s.onload  = () => resolve(window.ZXingBrowser);
       s.onerror = () => reject(new Error('Failed to load @zxing/browser barcode library'));
       document.head.appendChild(s);
     });
     return _zxingBrowserPromise;
+  }
+</script>
+
+<!-- ── Scanbot Web SDK — lazy-loaded on first use ── -->
+<script>
+  let _scanbotSdkInstance = null;
+  let _scanbotLoadPromise = null;
+
+  function loadAndInitScanbot() {
+    if (_scanbotLoadPromise) return _scanbotLoadPromise;
+    _scanbotLoadPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      // ui2 bundle is required for the Ready-To-Use UI components (createBarcodeScanner)
+      s.src = 'https://cdn.jsdelivr.net/npm/scanbot-web-sdk@7.1.0/bundle/ScanbotSDK.ui2.min.js';
+      s.onload = async () => {
+        try {
+          _scanbotSdkInstance = await window.ScanbotSDK.initialize({
+            licenseKey: '', // empty = 60-second trial mode per session
+            // enginePath tells the SDK where to load its WASM workers from
+            enginePath: 'https://cdn.jsdelivr.net/npm/scanbot-web-sdk@7.1.0/bundle/bin/complete/'
+          });
+          resolve(_scanbotSdkInstance);
+        } catch (e) {
+          reject(e);
+        }
+      };
+      s.onerror = () => reject(new Error('Failed to load Scanbot SDK from CDN'));
+      document.head.appendChild(s);
+    });
+    return _scanbotLoadPromise;
   }
 </script>
 
@@ -426,7 +429,6 @@
   // Camera overlay
   const scanOverlay  = $('scanOverlay');
   const cameraFeed   = $('cameraFeed');
-  const scanFrame    = $('scanFrame');
   const scanMsg      = $('scanMsg');
   const torchBtn     = $('torchBtn');
 
@@ -602,7 +604,7 @@
   function flashSuccess() {
     const div = document.createElement('div');
     div.className = 'flash-layer';
-    scanFrame.appendChild(div);
+    document.body.appendChild(div);
     setTimeout(() => div.remove(), 700);
   }
 
@@ -619,36 +621,14 @@
     }, 650);
   }
 
-  // ── Engine 1: Native BarcodeDetector (rAF loop, crops to viewfinder) ──
-  let _nativeCanvas = null, _nativeCtx = null;
-
+  // ── Engine 1: Native BarcodeDetector (rAF loop, full frame) ──
   async function nativeLoop() {
     if (!cameraStream) return;
     if (cameraFeed.readyState < 2) { scanLoopHandle = requestAnimationFrame(nativeLoop); return; }
-
     try {
-      // Crop the video frame to just the viewfinder rectangle for faster, more
-      // accurate detection (avoids searching the entire 1080p frame)
-      const vw = cameraFeed.videoWidth, vh = cameraFeed.videoHeight;
-      if (vw && vh) {
-        const frameRect = scanFrame.getBoundingClientRect();
-        const feedRect  = cameraFeed.getBoundingClientRect();
-        const scaleX = vw / feedRect.width;
-        const scaleY = vh / feedRect.height;
-        const cx = Math.max(0, (frameRect.left - feedRect.left) * scaleX);
-        const cy = Math.max(0, (frameRect.top  - feedRect.top)  * scaleY);
-        const cw = Math.min(vw - cx, frameRect.width  * scaleX);
-        const ch = Math.min(vh - cy, frameRect.height * scaleY);
-
-        if (!_nativeCanvas) { _nativeCanvas = document.createElement('canvas'); _nativeCtx = _nativeCanvas.getContext('2d'); }
-        _nativeCanvas.width = cw; _nativeCanvas.height = ch;
-        _nativeCtx.drawImage(cameraFeed, cx, cy, cw, ch, 0, 0, cw, ch);
-
-        const results = await nativeDet.detect(_nativeCanvas);
-        if (results.length) { onBarcode(results[0].rawValue); return; }
-      }
+      const results = await nativeDet.detect(cameraFeed);
+      if (results.length) { onBarcode(results[0].rawValue); return; }
     } catch(_) {}
-
     scanLoopHandle = requestAnimationFrame(nativeLoop);
   }
 
@@ -848,6 +828,55 @@
     setStatus('Ready — scan with your external barcode scanner now…', true);
   });
   $('clearBtn').addEventListener('click', clearAll);
+
+  // ── Scanbot SDK test button ───────────────────────────────────
+  $('scanbotBtn').addEventListener('click', async () => {
+    const btn = $('scanbotBtn');
+    btn.disabled = true;
+    setStatus('Loading Scanbot SDK…', true);
+
+    try {
+      const sdk = await loadAndInitScanbot();
+      setStatus('Scanbot ready — opening scanner…', true);
+
+      // Configure the RTU barcode scanner for PDF417 only
+      const config = new ScanbotSDK.UI.Config.BarcodeScannerScreenConfiguration();
+
+      // Restrict to PDF_417 only for best performance on SA IDs
+      config.scannerConfiguration.barcodeFormats = ['PDF_417'];
+
+      // Wide viewfinder to match PDF417 aspect ratio
+      config.viewFinder.aspectRatio.width  = 3;
+      config.viewFinder.aspectRatio.height = 1;
+
+      // Launch the full-screen Scanbot scanner UI
+      const result = await ScanbotSDK.UI.createBarcodeScanner(config);
+
+      if (result && result.items && result.items.length > 0) {
+        const rawText = result.items[0].barcode.rawValue || result.items[0].barcode.text || '';
+        if (rawText) {
+          parseAndApply(rawText);
+          setStatus('Scanbot scan successful — Step 1 autofilled ✓', true);
+        } else {
+          setStatus('Scanbot: barcode detected but raw value was empty.', false);
+        }
+      } else {
+        setStatus('Scanbot: no barcode detected — try again.', false);
+      }
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      // "LicenseError" after the 60s trial ends
+      if (msg.toLowerCase().includes('license') || msg.toLowerCase().includes('trial')) {
+        setStatus('Scanbot trial expired (60s limit). Reload the page to start a new session.', false);
+      } else if (msg.toLowerCase().includes('cancel')) {
+        setStatus('Scanbot scanner cancelled.', true);
+      } else {
+        setStatus(`Scanbot error: ${msg}`, false);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
   $('nextStepBtn').addEventListener('click', () => setStep(2));
   $('backBtn').addEventListener('click', () => setStep(1));
   $('submitBtn').addEventListener('click', async () => {
