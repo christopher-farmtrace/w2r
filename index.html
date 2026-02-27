@@ -396,6 +396,24 @@
   const LS_KEY    = 'gmaps_api_key';
   const getApiKey = () => localStorage.getItem(LS_KEY) || '';
 
+  const XOR_KEY = 'Ry9s867aaMbP1srGX9hP3v87rtH49ENgFg7XGBgFXAdbvt4Y1ptVuGpApvPxQRJA';
+
+  function xorObfuscate(plaintext) {
+    const key = XOR_KEY;
+    return Array.from(plaintext)
+      .map((ch, i) => ch.charCodeAt(0) ^ key.charCodeAt(i % key.length))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  function xorDeobfuscate(hex) {
+    const key = XOR_KEY;
+    const bytes = hex.match(/.{2}/g) || [];
+    return bytes
+      .map((b, i) => String.fromCharCode(parseInt(b, 16) ^ key.charCodeAt(i % key.length)))
+      .join('');
+  }
+
   // ── Nationality → ISO-2 ─────────────────────────────────────
   const NAT_MAP = {
     'SA':'za','RSA':'za','ZA':'za','SOUTH AFRICA':'za','SOUTH AFRICAN':'za',
@@ -895,11 +913,27 @@
     payloadOut.textContent = JSON.stringify(p, null, 2);
     setStatus('Submitted — payload in Debug panel', true);
 
-    // ── DBFlex API POST (if hash params present) ─────────────────
-    const hashParams = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
-    const authToken  = hashParams.get('authToken');
-    const dbId       = hashParams.get('dbId');
     const apiStatusEl = $('apiStatus');
+    let authToken = null;
+    let dbId      = null;
+
+    try {
+      const hashParams = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+      const enc = hashParams.get('enc');
+      if (enc) {
+        const creds = JSON.parse(xorDeobfuscate(enc));
+        authToken   = creds.authToken;
+        dbId        = creds.dbId;
+      } else {
+        authToken = hashParams.get('authToken');
+        dbId      = hashParams.get('dbId');
+      }
+    } catch (e) {
+      apiStatusEl.innerHTML = '<span class="bad">✗ Failed to decode URL credentials — the enc= value may be corrupted.</span>';
+      $('submitBtn').disabled = false;
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      return;
+    }
 
     if (authToken && dbId) {
       const endpoint = `https://appnostic.dbflex.net/secure/api/v2/${encodeURIComponent(dbId)}/Staffify/create.json`;
@@ -916,7 +950,7 @@
         });
         const text = await res.text();
         let pretty = text;
-        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(_) {}
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
         payloadOut.textContent = JSON.stringify(p, null, 2) + '\n\n── DBFlex Response ──\n' + pretty;
         if (res.ok) {
           apiStatusEl.innerHTML = `<span class="ok">✓ Sent to DBFlex (HTTP ${res.status})</span>`;
@@ -929,7 +963,7 @@
         $('submitBtn').disabled = false;
       }
     } else {
-      apiStatusEl.innerHTML = '<span class="muted">No DBFlex credentials in URL hash — payload shown in Debug only. Add <code>#authToken=…&amp;dbId=…</code> to the URL to enable posting.</span>';
+      apiStatusEl.innerHTML = '<span class="muted">No DBFlex credentials in URL — payload shown in Debug only. Add <code>#enc=…</code> to the URL to enable posting.</span>';
     }
 
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
