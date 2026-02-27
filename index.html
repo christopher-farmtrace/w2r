@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SA ID Barcode Autofill</title>
+  <title>SA / ZW ID Barcode Autofill</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; background: #f5f5f5; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; margin-bottom: 14px; background: #fff; }
@@ -106,7 +106,7 @@
 <!-- ═══════════════════ CAMERA OVERLAY ═══════════════════ -->
 <div id="scanOverlay" class="hidden" role="dialog" aria-modal="true" aria-label="Barcode Scanner">
   <video id="cameraFeed" playsinline muted autoplay></video>
-  <div class="scan-label">Point camera at the PDF417 barcode (back of SA ID)</div>
+  <div class="scan-label">Point camera at the PDF417 barcode (back of SA or Zimbabwe ID)</div>
   <div id="scanMsg">Initialising…</div>
   <div class="scan-actions">
     <button id="torchBtn" type="button">🔦 Torch</button>
@@ -124,7 +124,9 @@
   <h2 style="margin:0 0 8px;">Barcode → Form Autofill</h2>
   <div class="hint">
     Tap <b>Scan with Camera</b> to use your phone's camera on the PDF417 barcode on the
-    <b>back</b> of the SA ID. Or use a Bluetooth / USB barcode scanner with <b>Scanner</b>.
+    <b>back</b> of the SA or Zimbabwe ID. Or use a Bluetooth / USB barcode scanner with <b>Scanner</b>.
+    The app auto-detects whether the barcode is a South African ID (13-digit number) or a
+    Zimbabwean ID (format <code>XX-XXXXXXA-XX</code>) and fills the form accordingly.
   </div>
 
   <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -200,7 +202,7 @@
     <button id="nextStepBtn" type="button">Next step →</button>
   </div>
   <div class="hint muted" style="margin-top:8px;">
-    Tip: check the Debug section if scanning produces unexpected results.
+    Tip: The app auto-detects SA IDs (13-digit number) and Zimbabwe IDs (e.g. <code>63-123456A07</code>). Check the Debug section if scanning produces unexpected results.
   </div>
 </div>
 
@@ -524,37 +526,219 @@
     if (s.includes('|')) return s.split('|').map(p => p.trim()).filter(Boolean);
     return s.split(/\s*\|\s*|\s{2,}/).map(p => p.trim()).filter(Boolean);
   }
-  function parseSaIdFields(parts) {
-    const idx = parts.findIndex(p => /^\d{13}$/.test(p.replace(/\s/g,'')));
-    const idNumber = idx >= 0 ? parts[idx].replace(/\s/g,'') : '';
-    let surname = parts[0]||'', names = parts[1]||'', gender = '';
-    let nationality = parts[3]||'', dobRaw = parts[5]||'';
-    let citizenship = parts[7]||'', issueRaw = parts[8]||'';
 
-    const isGender    = v => /^[MF]$/i.test((v||'').trim());
-    const isDateWords = v => /^\d{2}\s+[A-Z]{3}\s+\d{4}$/i.test((v||'').trim());
-    const parseDW     = v => {
-      const m = (v||'').trim().toUpperCase().match(/^(\d{2})\s+([A-Z]{3})\s+(\d{4})$/);
-      if (!m) return '';
-      const MM = {JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',
-                  JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12'}[m[2]]||'';
-      return MM ? `${m[3]}-${MM}-${m[1]}` : '';
-    };
+  // ════════════════════════════════════════════════════════════
+  // PER-COUNTRY PARSERS
+  // Each parser is self-contained:
+  //   detect*(parts, rawText) → boolean   — is this barcode mine?
+  //   parse*(parts)           → fields    — extract fields, no defaults from other countries
+  // detectAndParse() calls detect* in priority order and hands off to the matching parser.
+  // If nothing matches, it returns empty fields and type 'UNKNOWN'.
+  // ════════════════════════════════════════════════════════════
 
-    if (isGender(parts[2])) gender = parts[2].toUpperCase();
+  // ── Shared date helpers (pure, no country coupling) ─────────
+  const isDateWords    = v => /^\d{2}\s+[A-Z]{3}\s+\d{4}$/i.test((v||'').trim());
+  const parseDW        = v => {
+    const m = (v||'').trim().toUpperCase().match(/^(\d{2})\s+([A-Z]{3})\s+(\d{4})$/);
+    if (!m) return '';
+    const MM = {JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',
+                JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12'}[m[2]]||'';
+    return MM ? `${m[3]}-${MM}-${m[1]}` : '';
+  };
+  const parseDateNumeric = v => {
+    if (!v) return '';
+    const s = v.trim();
+    let m = s.match(/^(\d{4})(\d{2})(\d{2})$/);        if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/);    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+    return '';
+  };
+  const parseDate = v => isDateWords(v) ? parseDW(v) : parseDateNumeric(v);
+
+  // ── Blank result template — every parser starts from this ───
+  const blankFields = () => ({
+    surname:'', names:'', gender:'', nationality:'',
+    idNumber:'', dob:'', citizenship:'', issueDate:'',
+  });
+
+  // ════════════════════════════════════════════════════════════
+  // SOUTH AFRICA
+  // Detection: exactly one 13-digit numeric field (the SA ID number).
+  // Format:    positional, no labels.
+  // ════════════════════════════════════════════════════════════
+  const SA_ID_RE = /^\d{13}$/;
+
+  function detectSA(parts) {
+    return parts.some(p => SA_ID_RE.test(p.replace(/\s/g, '')));
+  }
+
+  function parseSA(parts) {
+    const out = blankFields();
+    const isGender = v => /^[MF]$/i.test((v||'').trim());
+
+    const idx = parts.findIndex(p => SA_ID_RE.test(p.replace(/\s/g,'')));
+    out.idNumber = idx >= 0 ? parts[idx].replace(/\s/g,'') : '';
+
+    out.surname     = parts[0] || '';
+    out.names       = parts[1] || '';
+    if (isGender(parts[2])) out.gender = parts[2].toUpperCase();
+    out.nationality = parts[3] || '';
+    const dobRaw    = parts[5] || '';
+    out.citizenship = parts[7] || '';
+    const issueRaw  = parts[8] || '';
+
     if (idx >= 0) {
-      if ((!nationality||nationality.length>10)&&parts[idx-1]) nationality = parts[idx-1];
-      if (!dobRaw     && parts[idx+1]) dobRaw      = parts[idx+1];
-      if (!citizenship&& parts[idx+3]) citizenship = parts[idx+3];
-      if (!issueRaw   && parts[idx+4]) issueRaw    = parts[idx+4];
-      if (!gender) { const g = parts.find(isGender); if (g) gender = g.toUpperCase(); }
+      if ((!out.nationality || out.nationality.length > 10) && parts[idx-1])
+        out.nationality = parts[idx-1];
+      if (!dobRaw   && parts[idx+1]) out.dob       = parseDate(parts[idx+1]);
+      if (!out.citizenship && parts[idx+3]) out.citizenship = parts[idx+3];
+      if (!issueRaw && parts[idx+4]) out.issueDate = parseDate(parts[idx+4]);
+      if (!out.gender) { const g = parts.find(isGender); if (g) out.gender = g.toUpperCase(); }
     }
-    return {
-      surname, names, gender, nationality, idNumber,
-      dob:       isDateWords(dobRaw)   ? parseDW(dobRaw)   : '',
-      citizenship,
-      issueDate: isDateWords(issueRaw) ? parseDW(issueRaw) : '',
-    };
+    if (dobRaw)   out.dob       = parseDate(dobRaw);
+    if (issueRaw) out.issueDate = parseDate(issueRaw);
+
+    return out;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // ZIMBABWE
+  // Detection: presence of a ZW-format ID number (XX-XXXXXXA-XX) OR
+  //            at least two ZW-specific labelled fields ("Surname:", "Birth date:", etc.).
+  //            Never triggered by SA-format barcodes.
+  // Format:    labelled ("Label: Value"), with a positional fallback.
+  // ════════════════════════════════════════════════════════════
+
+  // ZW ID: 2-digit registrar · 6-7 digit serial · alpha check · 2-digit district
+  // May be written with hyphens, spaces, or nothing between parts.
+  // Must NOT match a 13-digit SA ID — the alpha check letter distinguishes it.
+  const ZW_ID_RE = /\b\d{2}[-\s]?\d{6,7}[-\s]?[A-Z][-\s]?\d{2}\b/i;
+
+  // ZW barcode label keywords — used for detection and for labelled-field parsing.
+  // These are ZW-specific; none of them appear in SA barcodes.
+  const ZW_LABELS = ['surname','first name','birth date','village of origin','place of birth','issue date','national id'];
+
+  function extractZimId(s) {
+    const m = (s||'').match(ZW_ID_RE);
+    return m ? m[0].replace(/\s/g,'').toUpperCase() : null;
+  }
+
+  function detectZW(parts) {
+    // Signal 1: a ZW-format ID number exists in any field value
+    if (parts.some(p => ZW_ID_RE.test(p))) return true;
+    // Signal 2: at least two ZW-specific labels are present (guards against single-word coincidences)
+    const labelHits = parts.filter(p => {
+      const lbl = (p.split(':')[0] || '').trim().toLowerCase();
+      return ZW_LABELS.includes(lbl);
+    });
+    return labelHits.length >= 2;
+  }
+
+  function parseZW(parts) {
+    // ── Build label → raw-value map ──────────────────────────
+    const labeled = {};
+    parts.forEach(p => {
+      const m = p.match(/^([^:]{1,40}):\s*(.*)$/);
+      if (m) labeled[m[1].trim().toLowerCase()] = m[2].trim();
+    });
+
+    // Lookup helper — checks exact key, then partial includes, in priority order
+    function get(...keys) {
+      for (const k of keys) {
+        if (labeled[k] !== undefined) return labeled[k];
+      }
+      // Partial match fallback
+      for (const k of keys) {
+        const found = Object.keys(labeled).find(lk => lk.includes(k));
+        if (found !== undefined) return labeled[found];
+      }
+      return null; // explicit null = "not present in this barcode"
+    }
+
+    const out = blankFields();
+    // nationality stays '' — ZW barcodes don't encode it; callers see '' not a forced default
+
+    // ID Number field may carry trailing tokens:  "63-1234567 B 00 CIT M"
+    const rawIdField = get('id number', 'national id', 'id no');
+    if (rawIdField !== null) {
+      out.idNumber = extractZimId(rawIdField) || '';
+      const afterId = rawIdField.replace(ZW_ID_RE, '').trim();
+      if (afterId) {
+        const tokens = afterId.split(/\s+/);
+        // Last token is gender (M/F) if it matches
+        if (/^[MF]$/i.test(tokens[tokens.length - 1])) {
+          out.gender = tokens.pop().toUpperCase();
+        }
+        // Remaining tokens are citizenship
+        if (tokens.length) out.citizenship = tokens.join(' ');
+      }
+    }
+
+    out.surname = get('surname', 'last name', 'family name') ?? '';
+    out.names   = get('first name', 'forename', 'given name', 'names') ?? '';
+
+    // Gender from dedicated field takes precedence over the hint extracted above
+    const rawGender = get('gender', 'sex');
+    if (rawGender !== null) out.gender = rawGender.toUpperCase().charAt(0);
+
+    const dobRaw   = get('birth date', 'date of birth', 'dob') ?? '';
+    out.dob        = parseDate(dobRaw);
+
+    const issueRaw = get('issue date', 'date of issue') ?? '';
+    out.issueDate  = parseDate(issueRaw);
+
+    // Explicit citizenship field wins over the hint already set from ID field
+    const citField = get('citizenship', 'citizen status');
+    if (citField !== null) out.citizenship = citField;
+
+    // ── Positional fallback if labelled parsing produced no ID ──
+    // (handles ZW barcodes that omit labels but still use ZW ID format)
+    if (!out.idNumber) {
+      return parseZWPositional(parts);
+    }
+
+    return out;
+  }
+
+  function parseZWPositional(parts) {
+    const out = blankFields();
+    const isGender = v => /^[MF]$/i.test((v||'').trim());
+    let dobRaw = '', issueRaw = '';
+
+    for (const p of parts) {
+      const id = extractZimId(p);
+      if (id && !out.idNumber) {
+        out.idNumber = id;
+        // Check for trailing gender / citizenship tokens
+        const after = p.replace(ZW_ID_RE, '').trim();
+        if (after) {
+          const tokens = after.split(/\s+/);
+          if (/^[MF]$/i.test(tokens[tokens.length - 1])) out.gender = tokens.pop().toUpperCase();
+          if (tokens.length) out.citizenship = tokens.join(' ');
+        }
+        continue;
+      }
+      if (isGender(p) && !out.gender)  { out.gender = p.toUpperCase(); continue; }
+      if (parseDate(p))                 {
+        if (!dobRaw) { dobRaw = p; continue; }
+        if (!issueRaw) { issueRaw = p; continue; }
+      }
+      if (!out.surname) { out.surname = p; continue; }
+      if (!out.names)   { out.names   = p; continue; }
+    }
+
+    out.dob       = parseDate(dobRaw);
+    out.issueDate = parseDate(issueRaw);
+    return out;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // DISPATCHER — strict detection, no cross-country fallback defaults
+  // ════════════════════════════════════════════════════════════
+  function detectAndParse(parts, rawText) {
+    if (detectZW(parts))  return { data: parseZW(parts),  type: 'ZW' };
+    if (detectSA(parts))  return { data: parseSA(parts),  type: 'SA' };
+    return { data: blankFields(), type: 'UNKNOWN' };
   }
 
   function fillStep1(d) {
@@ -573,10 +757,15 @@
     rawOut.textContent = n || '(empty)';
     const parts = splitFields(n);
     fieldsOut.textContent = parts.map((p,i) => `[${i}] ${p}`).join('\n') || '(no fields)';
-    const data = parseSaIdFields(parts);
+    const { data, type } = detectAndParse(parts, n);
     fillStep1(data);
-    if (data.idNumber) setStatus('Scan captured — Step 1 autofilled ✓', true);
-    else               setStatus('Scan captured, but no 13-digit ID found. Check Debug.', false);
+    if (type === 'UNKNOWN') {
+      setStatus('Scan captured, but ID type not recognised. Check Debug.', false);
+    } else if (data.idNumber) {
+      setStatus(`Scan captured (${type} ID) — Step 1 autofilled`, true);
+    } else {
+      setStatus(`Scan captured (${type} ID detected) but ID number missing. Check Debug.`, false);
+    }
   }
 
   // ── Keyboard wedge scanner ───────────────────────────────────
