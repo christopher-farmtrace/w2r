@@ -183,14 +183,14 @@
     </div>
     <div>
       <label>Citizenship</label>
-      <input id="citizenship" placeholder="CITIZEN / PERMANENT RESIDENT / ..." />
+      <input id="citizenship" placeholder="RSA / ZWE / ..." />
     </div>
   </div>
 
   <div class="row">
     <div>
       <label>Nationality (scanned)</label>
-      <input id="nationality" placeholder="SA / RSA / ..." />
+      <input id="nationality" placeholder="RSA / ZWE / ..." />
     </div>
     <div>
       <label>Issue Date</label>
@@ -561,6 +561,15 @@
     idNumber:'', dob:'', citizenship:'', issueDate:'',
   });
 
+  // ── Citizenship resolution ───────────────────────────────────
+  // If the raw barcode value signals "citizen", write the country code.
+  // Non-citizen statuses (e.g. "PERMANENT RESIDENT") are passed through as-is.
+  const CITIZEN_TOKENS = /^(cit|citizen|citizenship|zim\s*citizen|sa\s*citizen|rsa\s*citizen)$/i;
+  function resolveCitizenship(raw, countryCode) {
+    if (!raw) return '';
+    return CITIZEN_TOKENS.test(raw.trim()) ? countryCode : raw;
+  }
+
   // ════════════════════════════════════════════════════════════
   // SOUTH AFRICA
   // Detection: exactly one 13-digit numeric field (the SA ID number).
@@ -584,14 +593,14 @@
     if (isGender(parts[2])) out.gender = parts[2].toUpperCase();
     out.nationality = parts[3] || '';
     const dobRaw    = parts[5] || '';
-    out.citizenship = parts[7] || '';
+    out.citizenship = resolveCitizenship(parts[7] || '', 'RSA');
     const issueRaw  = parts[8] || '';
 
     if (idx >= 0) {
       if ((!out.nationality || out.nationality.length > 10) && parts[idx-1])
         out.nationality = parts[idx-1];
       if (!dobRaw   && parts[idx+1]) out.dob       = parseDate(parts[idx+1]);
-      if (!out.citizenship && parts[idx+3]) out.citizenship = parts[idx+3];
+      if (!out.citizenship && parts[idx+3]) out.citizenship = resolveCitizenship(parts[idx+3], 'RSA');
       if (!issueRaw && parts[idx+4]) out.issueDate = parseDate(parts[idx+4]);
       if (!out.gender) { const g = parts.find(isGender); if (g) out.gender = g.toUpperCase(); }
     }
@@ -669,7 +678,7 @@
           out.gender = tokens.pop().toUpperCase();
         }
         // Remaining tokens are citizenship
-        if (tokens.length) out.citizenship = tokens.join(' ');
+        if (tokens.length) out.citizenship = resolveCitizenship(tokens.join(' '), 'ZWE');
       }
     }
 
@@ -688,7 +697,7 @@
 
     // Explicit citizenship field wins over the hint already set from ID field
     const citField = get('citizenship', 'citizen status');
-    if (citField !== null) out.citizenship = citField;
+    if (citField !== null) out.citizenship = resolveCitizenship(citField, 'ZWE');
 
     // ── Positional fallback if labelled parsing produced no ID ──
     // (handles ZW barcodes that omit labels but still use ZW ID format)
@@ -715,7 +724,7 @@
         if (after) {
           const tokens = after.split(/\s+/);
           if (/^[MF]$/i.test(tokens[tokens.length - 1])) out.gender = tokens.pop().toUpperCase();
-          if (tokens.length) out.citizenship = tokens.join(' ');
+          if (tokens.length) out.citizenship = resolveCitizenship(tokens.join(' '), 'ZWE');
         }
         continue;
       }
