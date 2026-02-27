@@ -655,12 +655,12 @@
       return null; // explicit null = "not present in this barcode"
     }
 
-    const zim_out = blankFields();
+    const out = blankFields();
 
     // ID Number field may carry trailing tokens:  "63-1234567 B 00 CIT M"
     const rawIdField = get('id number', 'national id', 'id no');
     if (rawIdField !== null) {
-      zim_out.idNumber = extractZimId(rawIdField) || '';
+      out.idNumber = extractZimId(rawIdField) || '';
       const afterId = rawIdField.replace(ZW_ID_RE, '').trim();
       if (afterId) {
         const tokens = afterId.split(/\s+/);
@@ -673,32 +673,32 @@
       }
     }
 
-    zim_out.surname = get('surname', 'last name', 'family name') ?? '';
-    zim_out.names   = get('first name', 'forename', 'given name', 'names') ?? '';
+    out.surname = get('surname', 'last name', 'family name') ?? '';
+    out.names   = get('first name', 'forename', 'given name', 'names') ?? '';
 
     // Gender from dedicated field takes precedence over the hint extracted above
     const rawGender = get('gender', 'sex');
-    if (rawGender !== null) zim_out.gender = rawGender.toUpperCase().charAt(0);
+    if (rawGender !== null) out.gender = rawGender.toUpperCase().charAt(0);
 
     const dobRaw   = get('birth date', 'date of birth', 'dob') ?? '';
-    zim_out.dob        = parseDate(dobRaw);
+    out.dob        = parseDate(dobRaw);
 
     const issueRaw = get('issue date', 'date of issue') ?? '';
-    zim_out.issueDate  = parseDate(issueRaw);
+    out.issueDate  = parseDate(issueRaw);
 
     // Explicit citizenship field wins over the hint already set from ID field
     const citField = get('citizenship', 'citizen status');
-    if (citField !== null) zim_out.citizenship = citField;
+    if (citField !== null) out.citizenship = citField;
 
     // ── Positional fallback if labelled parsing produced no ID ──
     // (handles ZW barcodes that omit labels but still use ZW ID format)
-    if (!zim_out.idNumber) {
+    if (!out.idNumber) {
       return parseZWPositional(parts);
     }
 
-    zim_out.nationality = 'ZWE';
+    out.nationality = 'ZWE';
 
-    return zim_out;
+    return out;
   }
 
   function parseZWPositional(parts) {
