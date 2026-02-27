@@ -759,10 +759,10 @@
     const parts = splitFields(n);
     fieldsOut.textContent = parts.map((p,i) => `[${i}] ${p}`).join('\n') || '(no fields)';
     const { data, type } = detectAndParse(parts, n);
-    fillStep1(data);
     if (type === 'UNKNOWN') {
       setStatus('Scan captured, but ID type not recognised. Check Debug.', false);
     } else if (data.idNumber) {
+      fillStep1(data);
       setStatus(`Scan captured (${type} ID) — Step 1 autofilled`, true);
     } else {
       setStatus(`Scan captured (${type} ID detected) but ID number missing. Check Debug.`, false);
