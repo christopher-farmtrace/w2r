@@ -356,20 +356,33 @@
   <pre id="payloadOut">(submit to view payload)</pre>
 </div>
 
-<!-- ZXing lazy-loader (iOS / non-Chrome fallback) -->
+<!--
+  ═══════════════════════════════════════════════════════════════
+  BARCODE ENGINE LOADER
+  ───────────────────────────────────────────────────────────────
+  Strategy (in priority order):
+    1. Native BarcodeDetector API w/ pdf417 support  (Chrome Android ≥83, some desktop Chrome)
+    2. @zxing/browser BrowserPDF417Reader            (iOS Safari, Firefox, older Android Chrome)
+       – modern, maintained replacement for @zxing/library
+       – uses the continuous video decode path, NOT the broken
+         manual BinaryBitmap path from the old library
+  ═══════════════════════════════════════════════════════════════
+-->
 <script>
-let _zxingPromise = null;
-function loadZXing() {
-  if (_zxingPromise) return _zxingPromise;
-  _zxingPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://unpkg.com/@zxing/library@0.21.2/umd/index.min.js';
-    s.onload  = resolve;
-    s.onerror = () => reject(new Error('Failed to load ZXing barcode library'));
-    document.head.appendChild(s);
-  });
-  return _zxingPromise;
-}
+  // Lazy-load @zxing/browser (UMD bundle exposes window.ZXingBrowser)
+  let _zxingBrowserPromise = null;
+  function loadZXingBrowser() {
+    if (_zxingBrowserPromise) return _zxingBrowserPromise;
+    _zxingBrowserPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      // @zxing/browser 0.1.4 – stable, works on iOS 14.5+ & Android Chrome
+      s.src = 'https://unpkg.com/@zxing/browser@0.1.4/umd/index.min.js';
+      s.onload  = () => resolve(window.ZXingBrowser);
+      s.onerror = () => reject(new Error('Failed to load @zxing/browser barcode library'));
+      document.head.appendChild(s);
+    });
+    return _zxingBrowserPromise;
+  }
 </script>
 
 <script>
@@ -422,15 +435,15 @@ function loadZXing() {
   let placesAC = null, placesSvc = null;
 
   // Camera
-  let cameraStream   = null;
-  let scanLoopHandle = null;   // rAF id or interval id
-  let scanEngine     = null;   // 'native' | 'zxing'
-  let nativeDet      = null;
-  let scanCanvas     = null, scanCtx = null;
-  let torchOn        = false;
-  let torchTrack     = null;
-  let lastResult     = null;
-  let lastResultTime = 0;
+  let cameraStream    = null;
+  let scanLoopHandle  = null;   // rAF id, interval id, or ZXing reader ref
+  let scanEngine      = null;   // 'native' | 'zxing-browser'
+  let nativeDet       = null;
+  let zxingReader     = null;   // BrowserPDF417Reader instance
+  let torchOn         = false;
+  let torchTrack      = null;
+  let lastResult      = null;
+  let lastResultTime  = 0;
 
   // ── UI helpers ──────────────────────────────────────────────
   function setStatus(msg, ok = true) {
@@ -564,9 +577,13 @@ function loadZXing() {
   });
   scanCapture.addEventListener('input', () => { buffer = scanCapture.value; scheduleFlush(); });
 
-  // ── Camera scanner ───────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // CAMERA SCANNER — fixed engine selection
+  // ══════════════════════════════════════════════════════════════
 
-  // Determine best available PDF417 decoder
+  // Pick the best available engine:
+  //  • 'native'       — BarcodeDetector API with pdf417 support
+  //  • 'zxing-browser' — @zxing/browser BrowserPDF417Reader (all other browsers)
   async function pickEngine() {
     if ('BarcodeDetector' in window) {
       try {
@@ -577,9 +594,9 @@ function loadZXing() {
         }
       } catch(_) {}
     }
-    // Fall back to ZXing (iOS Safari, Firefox, older Android)
-    await loadZXing();
-    return 'zxing';
+    // Load modern @zxing/browser (NOT the old broken @zxing/library)
+    await loadZXingBrowser();
+    return 'zxing-browser';
   }
 
   function flashSuccess() {
@@ -602,43 +619,78 @@ function loadZXing() {
     }, 650);
   }
 
-  // Native BarcodeDetector — runs on requestAnimationFrame
+  // ── Engine 1: Native BarcodeDetector (rAF loop, crops to viewfinder) ──
+  let _nativeCanvas = null, _nativeCtx = null;
+
   async function nativeLoop() {
     if (!cameraStream) return;
     if (cameraFeed.readyState < 2) { scanLoopHandle = requestAnimationFrame(nativeLoop); return; }
+
     try {
-      const results = await nativeDet.detect(cameraFeed);
-      if (results.length) { onBarcode(results[0].rawValue); return; }
+      // Crop the video frame to just the viewfinder rectangle for faster, more
+      // accurate detection (avoids searching the entire 1080p frame)
+      const vw = cameraFeed.videoWidth, vh = cameraFeed.videoHeight;
+      if (vw && vh) {
+        const frameRect = scanFrame.getBoundingClientRect();
+        const feedRect  = cameraFeed.getBoundingClientRect();
+        const scaleX = vw / feedRect.width;
+        const scaleY = vh / feedRect.height;
+        const cx = Math.max(0, (frameRect.left - feedRect.left) * scaleX);
+        const cy = Math.max(0, (frameRect.top  - feedRect.top)  * scaleY);
+        const cw = Math.min(vw - cx, frameRect.width  * scaleX);
+        const ch = Math.min(vh - cy, frameRect.height * scaleY);
+
+        if (!_nativeCanvas) { _nativeCanvas = document.createElement('canvas'); _nativeCtx = _nativeCanvas.getContext('2d'); }
+        _nativeCanvas.width = cw; _nativeCanvas.height = ch;
+        _nativeCtx.drawImage(cameraFeed, cx, cy, cw, ch, 0, 0, cw, ch);
+
+        const results = await nativeDet.detect(_nativeCanvas);
+        if (results.length) { onBarcode(results[0].rawValue); return; }
+      }
     } catch(_) {}
+
     scanLoopHandle = requestAnimationFrame(nativeLoop);
   }
 
-  // ZXing — runs on setInterval, decodes canvas frames
-  function startZXingLoop() {
-    if (!scanCanvas) { scanCanvas = document.createElement('canvas'); scanCtx = scanCanvas.getContext('2d'); }
-    const ZX = window.ZXing;
-    const hints = new Map([
-      [ZX.DecodeHintType.POSSIBLE_FORMATS, [ZX.BarcodeFormat.PDF_417]],
-      [ZX.DecodeHintType.TRY_HARDER, true],
-    ]);
-    const reader = new ZX.BrowserPDF417Reader(hints);
+  // ── Engine 2: @zxing/browser BrowserPDF417Reader ──────────────
+  // This is the modern, maintained replacement for @zxing/library.
+  // It uses the continuous video decode loop internally — no manual
+  // canvas/BinaryBitmap wrangling needed, and it handles focus wait,
+  // retry, and TRY_HARDER automatically.
+  function startZXingBrowserLoop() {
+    const ZXB = window.ZXingBrowser;
+    if (!ZXB || !ZXB.BrowserPDF417Reader) {
+      setScanMsg('Decoder library failed to load', 'bad');
+      return;
+    }
 
-    scanLoopHandle = setInterval(() => {
-      if (!cameraStream || cameraFeed.readyState < 2 || cameraFeed.paused) return;
-      const vw = cameraFeed.videoWidth, vh = cameraFeed.videoHeight;
-      if (!vw || !vh) return;
-      scanCanvas.width = vw; scanCanvas.height = vh;
-      scanCtx.drawImage(cameraFeed, 0, 0, vw, vh);
-      const imgData  = scanCtx.getImageData(0, 0, vw, vh);
-      const lum      = new ZX.RGBLuminanceSource(imgData.data, vw, vh);
-      const bmp      = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
-      try {
-        const res = reader.decode(bmp, hints);
-        if (res && res.getText()) onBarcode(res.getText());
-      } catch(_) { /* NotFoundException = no barcode in frame, normal */ }
-    }, 250);
+    // Hints: enable TRY_HARDER for dense SA ID barcodes
+    const hints = new Map();
+    hints.set(2 /* DecodeHintType.TRY_HARDER */, true);
+
+    zxingReader = new ZXB.BrowserPDF417Reader(hints);
+
+    // decodeFromVideoElement continuously decodes from the already-playing
+    // video element. It resolves/rejects on first result or error.
+    // We use the callback form so we get every frame attempt.
+    zxingReader.decodeFromVideoElement(cameraFeed, (result, err) => {
+      if (!cameraStream) return; // already stopped
+      if (result) {
+        onBarcode(result.getText());
+      }
+      // err here is just NotFoundException (no barcode in frame) — normal, ignore
+    }).catch(err => {
+      // Only surface real errors, not NotFoundException
+      if (err && err.name !== 'NotFoundException') {
+        setScanMsg(`Decoder error: ${err.message}`, 'bad');
+      }
+    });
+
+    // scanLoopHandle holds the reader so stopCamera() can reset it
+    scanLoopHandle = zxingReader;
   }
 
+  // ── Start / stop camera ──────────────────────────────────────
   async function startCamera() {
     $('cameraBtn').disabled = true;
     setScanMsg('Initialising…');
@@ -650,14 +702,18 @@ function loadZXing() {
       setScanMsg(`Decoder ready (${scanEngine === 'native' ? 'BarcodeDetector' : 'ZXing'}). Requesting camera…`);
 
       cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: {
+          facingMode: { ideal: 'environment' },
+          width:  { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
         audio: false,
       });
 
       cameraFeed.srcObject = cameraStream;
       await cameraFeed.play();
 
-      // Torch
+      // Torch support
       torchTrack = cameraStream.getVideoTracks()[0];
       const caps = torchTrack?.getCapabilities?.() || {};
       torchBtn.style.display = caps.torch ? '' : 'none';
@@ -667,7 +723,7 @@ function loadZXing() {
       if (scanEngine === 'native') {
         scanLoopHandle = requestAnimationFrame(nativeLoop);
       } else {
-        startZXingLoop();
+        startZXingBrowserLoop();
       }
 
     } catch (err) {
@@ -696,8 +752,15 @@ function loadZXing() {
   }
 
   function stopCamera() {
-    if (scanEngine === 'native' && scanLoopHandle) cancelAnimationFrame(scanLoopHandle);
-    else if (scanLoopHandle) clearInterval(scanLoopHandle);
+    // Stop the active scan engine
+    if (scanEngine === 'native' && scanLoopHandle) {
+      cancelAnimationFrame(scanLoopHandle);
+    } else if (scanEngine === 'zxing-browser' && zxingReader) {
+      try { zxingReader.reset(); } catch(_) {}
+      zxingReader = null;
+    } else if (scanLoopHandle && typeof scanLoopHandle === 'number') {
+      clearInterval(scanLoopHandle);
+    }
     scanLoopHandle = null;
 
     if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
@@ -750,7 +813,6 @@ function loadZXing() {
         setPlacesStatus('Enter your Google Maps API key in Settings to enable address autofill', 'warn');
         resolve(false); return;
       }
-      // If Maps already loaded with the same key, reuse it
       if (window.google?.maps) { resolve(true); return; }
       const s = document.createElement('script');
       s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&libraries=places`;
@@ -862,7 +924,6 @@ function loadZXing() {
     $('apiKeyStatus').innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${msg}</span>`;
   }
 
-  // Populate input with masked existing key on load
   function loadApiKeyIntoInput() {
     const k = getApiKey();
     $('apiKeyInput').value = k || '';
@@ -883,7 +944,6 @@ function loadZXing() {
     updateApiKeyBadge();
     setApiKeyStatus('Key saved!', true);
 
-    // If Maps not yet loaded, init now; if already loaded, just re-attach autocomplete
     if (!window.google?.maps) {
       setPlacesStatus('Loading Google Maps…', 'ok');
       try {
@@ -895,7 +955,6 @@ function loadZXing() {
         setPlacesStatus(`Google Maps error: ${e.message}`, 'bad');
       }
     } else {
-      // Maps SDK already loaded — just re-attach the autocomplete widget
       try {
         await initPlaces(key);
         setApiKeyStatus('Key saved ✓ (Maps already loaded)', true);
@@ -918,7 +977,6 @@ function loadZXing() {
   window.addEventListener('load', () => {
     loadApiKeyIntoInput();
     updateApiKeyBadge();
-    // Auto-open settings if no key saved yet
     if (!getApiKey()) $('settingsDetails').open = true;
     if (location.protocol === 'file:') {
       $('cameraBtn').disabled = true;
